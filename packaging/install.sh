@@ -108,6 +108,23 @@ else
   warn "the daemon did not start; see: journalctl --user -u dishus -e"
   exit 1
 fi
+
+# 6. SSH, for the app's SSH mode (optional). Like uinput: check and print, never sudo.
+ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+ip=${ip:-"this PC's IP (ip addr)"}
+if systemctl is-active --quiet sshd 2>/dev/null || systemctl is-active --quiet ssh 2>/dev/null; then
+  ok "SSH is on: in the app's SSH screen use address $ip, username $USER, port 22"
+else
+  echo
+  bold "Optional: the app's SSH mode (a terminal on this PC) needs an SSH server. To turn it on:"
+  case " $(. /etc/os-release 2>/dev/null; echo "${ID:-} ${ID_LIKE:-}") " in
+    *" arch "*)                echo "  sudo pacman -S --needed openssh && sudo systemctl enable --now sshd" ;;
+    *" debian "*|*" ubuntu "*) echo "  sudo apt install openssh-server && sudo systemctl enable --now ssh" ;;
+    *" fedora "*)              echo "  sudo dnf install openssh-server && sudo systemctl enable --now sshd" ;;
+    *)                         echo "  install OpenSSH server and enable its service (sshd)" ;;
+  esac
+  echo "  Then in the app: address $ip, username $USER, port 22, your login password."
+fi
 echo
 bold "Next: pair your phone"
 echo "  1. Install the DiShus app on the phone (DiShus-*.apk from the same release)."
