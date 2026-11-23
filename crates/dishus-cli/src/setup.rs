@@ -178,7 +178,9 @@ async fn setup() -> Result<()> {
 const SSH_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
 try {
     if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
-        Write-Host 'Installing OpenSSH Server (this can take a minute)...'
+        Write-Host 'Windows is downloading OpenSSH Server from Windows Update.'
+        Write-Host 'This is Windows itself, not DiShus: the first time it often takes 5-15 minutes.'
+        Write-Host 'Please do not close this window.'
         Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
     }
     Set-Service sshd -StartupType Automatic
@@ -208,6 +210,10 @@ fn offer_ssh() {
     {
         return;
     }
+    println!(
+        "  Setting up SSH in a separate window. If Windows has to download OpenSSH first, that\n  \
+         download (Windows Update, not DiShus) can take 5-15 minutes. Please wait."
+    );
     if let Err(e) = enable_ssh() {
         println!("  ! SSH was not enabled: {e:#}");
         return;
@@ -216,8 +222,8 @@ fn offer_ssh() {
     let ip = local_ip().map_or_else(|| "(see ipconfig)".to_owned(), |ip| ip.to_string());
     let user = std::env::var("USERNAME").unwrap_or_default();
     println!(
-        "  In the phone's SSH screen: address {ip}, username {user}, port 22,\n  \
-         and your Windows password (not the PIN)."
+        "  On the phone: SSH, pick this PC, username {user}, and your Windows password (not the PIN).\n  \
+         From another computer: ssh {user}@{ip}"
     );
 }
 
