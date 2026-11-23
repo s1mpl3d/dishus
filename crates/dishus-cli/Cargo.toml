@@ -16,7 +16,7 @@ tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "macros"
 clap.workspace = true
 anyhow.workspace = true
 toml.workspace = true
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [target.'cfg(windows)'.dependencies]
 dishus-win.workspace = true

@@ -362,6 +362,21 @@ pub fn state_dir() -> io::Result<PathBuf> {
     Ok(user_dirs()?.1.join("dishus"))
 }
 
+/// Visible size of this process's console window as (columns, rows); None without a console.
+pub fn console_size() -> Option<(u16, u16)> {
+    use windows::Win32::System::Console::{
+        CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo, GetStdHandle, STD_OUTPUT_HANDLE,
+    };
+    let mut info = CONSOLE_SCREEN_BUFFER_INFO::default();
+    // SAFETY: a valid out-pointer to a local; the handle is the process's own stdout.
+    unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE).ok()?, &mut info).ok()? };
+    let w = info.srWindow;
+    Some((
+        u16::try_from(w.Right - w.Left + 1).ok()?,
+        u16::try_from(w.Bottom - w.Top + 1).ok()?,
+    ))
+}
+
 /// The control pipe. Pipe names are machine-wide, so the user's SID is part of it; the DACL
 /// and the SID checks below are what actually keep other users out.
 pub fn pipe_name() -> io::Result<String> {

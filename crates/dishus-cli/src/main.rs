@@ -377,7 +377,10 @@ fn offline_revoke(sel: &str) -> Result<String> {
         .to_owned())
 }
 
-fn print_qr(uri: &str) -> Result<()> {
+/// Prints the QR code. On Windows, if the console is too small to show all of it (it would wrap
+/// or scroll out of view), it also opens it full size in the browser and returns that page's
+/// path, which the caller deletes once pairing ends (the page holds the pairing secret).
+fn print_qr(uri: &str) -> Result<Option<std::path::PathBuf>> {
     let code = qrcode::QrCode::new(uri.as_bytes())?;
     let s = code
         .render::<qrcode::render::unicode::Dense1x2>()
@@ -386,7 +389,47 @@ fn print_qr(uri: &str) -> Result<()> {
         .quiet_zone(true)
         .build();
     println!("{s}");
-    Ok(())
+    #[cfg(windows)]
+    {
+        let cols = s.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+        let rows = s.lines().count();
+        // +6: the step line above and the link lines below must fit on screen with it.
+        let too_small = dishus_win::console_size()
+            .is_some_and(|(c, r)| usize::from(c) < cols || usize::from(r) < rows + 6);
+        if too_small {
+            match open_qr_page(&code) {
+                Ok(page) => {
+                    println!(
+                        "This window is too small for the QR code; it is open in your browser.\n"
+                    );
+                    return Ok(Some(page));
+                }
+                Err(e) => println!(
+                    "! could not open the QR code in the browser: {e:#}\n  Make this window bigger, or use the link below.\n"
+                ),
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn open_qr_page(code: &qrcode::QrCode) -> Result<std::path::PathBuf> {
+    let svg = code
+        .render::<qrcode::render::svg::Color>()
+        .quiet_zone(true)
+        .build();
+    let html = format!(
+        "<!doctype html><meta charset=utf-8><title>DiShus pairing</title>\
+         <style>body{{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;\
+         justify-content:center;background:#fff;color:#222;font-family:sans-serif}}\
+         svg{{width:min(85vw,80vh);height:auto}}</style>{svg}\
+         <p>Scan with the DiShus app (Pair new PC). Close this page after pairing.</p>"
+    );
+    let page = dishus_win::state_dir()?.join("pair-qr.html");
+    dishus_win::write_private(&page, html.as_bytes())?;
+    std::process::Command::new("explorer").arg(&page).spawn()?;
+    Ok(page)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -563,8 +606,17 @@ async fn pair_once(capture_setup: bool) -> Result<bool> {
     println!(
         "\nStep 2/2: scan with the DiShus app (Pair new PC). Valid for {ttl} s, single use.\n"
     );
-    print_qr(&uri)?;
+    let page = print_qr(&uri)?;
     println!("Or paste this link into the app (it is a secret, don't share it):\n{uri}\n");
+    let paired = wait_paired(&before, ttl).await;
+    if let Some(page) = page {
+        let _ = std::fs::remove_file(page);
+    }
+    paired
+}
+
+async fn wait_paired(before: &[String], ttl: u64) -> Result<bool> {
+    let short = Duration::from_secs(10);
     let deadline = std::time::Instant::now() + Duration::from_secs(ttl);
     loop {
         tokio::time::sleep(Duration::from_millis(700)).await;
