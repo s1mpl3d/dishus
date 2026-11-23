@@ -6,7 +6,3 @@
 
 # JNI entry point implemented in Rust (crates/dishus-core/src/android.rs)
 -keep class org.dishus.app.NativeInit { *; }
-
-# JSch loads its ciphers/KEX by reflection.
--keep class com.jcraft.jsch.** { *; }
--dontwarn com.jcraft.jsch.**
