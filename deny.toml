@@ -13,6 +13,9 @@ ignore = [
   # binding generator, run at build time). Not linked into the daemon, CLI or phone library.
   # Latest uniffi (0.32.2) and askama (0.16.1) still use it. Re-check when uniffi updates.
   { id = "RUSTSEC-2026-0374", reason = "unmaintained, build-time binding generator only, via uniffi_bindgen" },
+  # `chrono`: unmaintained, no known vulnerability and no fixed release. Windows-only, pulled in
+  # by iroh -> netwatch -> wmi. Re-check when iroh updates.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained, no known vulnerability, Windows-only transitive via iroh" },
 ]
 
 [licenses]
