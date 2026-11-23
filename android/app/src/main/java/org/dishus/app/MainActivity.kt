@@ -22,6 +22,7 @@ import org.dishus.app.ui.DishusTheme
 import org.dishus.app.ui.HomeScreen
 import org.dishus.app.ui.LockScreen
 import org.dishus.app.ui.RemoteScreen
+import org.dishus.app.ui.SshScreen
 
 /** FragmentActivity (not ComponentActivity) because BiometricPrompt needs it. */
 class MainActivity : FragmentActivity() {
@@ -69,9 +70,12 @@ private fun Root(app: DishusApp, activity: FragmentActivity) {
             if (target != null) remotePc = target.id
         }
     }
+    var ssh by rememberSaveable { mutableStateOf(false) }
     val pc = remotePc
-    if (pc == null) {
-        HomeScreen(app, onConnect = { id -> app.prefs.lastPcId = id; remotePc = id })
+    if (ssh) {
+        SshScreen(onExit = { ssh = false })
+    } else if (pc == null) {
+        HomeScreen(app, onConnect = { id -> app.prefs.lastPcId = id; remotePc = id }, onSsh = { ssh = true })
     } else {
         RemoteScreen(app, pc, onExit = { remotePc = null })
     }

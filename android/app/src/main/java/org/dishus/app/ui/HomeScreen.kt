@@ -62,7 +62,7 @@ fun expiryText(expiresAt: Long): String {
 }
 
 @Composable
-fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
+fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit, onSsh: () -> Unit) {
     var pcs by remember { mutableStateOf(runCatching { app.core.pairedPcs() }.getOrDefault(emptyList())) }
     var pairing by remember { mutableStateOf(false) }
     var pairError by remember { mutableStateOf<String?>(null) }
@@ -106,6 +106,7 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Your PCs", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = onSsh) { Text("SSH") }
             TextButton(onClick = { settingsOpen = true }) { Text("Settings") }
             TextButton(onClick = { app.lockNow() }) { Text("Lock") }
         }

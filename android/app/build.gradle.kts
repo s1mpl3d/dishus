@@ -68,6 +68,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // UniFFI's Kotlin bindings call into the Rust core through JNA.
     implementation("net.java.dev.jna:jna:5.15.0@aar")
+    // SSH client for the terminal mode.
+    implementation("com.github.mwiede:jsch:0.2.20")
     // QR scanning (camera permission is requested only when the user taps "Scan").
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }
