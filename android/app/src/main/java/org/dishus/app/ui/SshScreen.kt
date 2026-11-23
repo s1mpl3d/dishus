@@ -101,6 +101,8 @@ fun SshScreen(onExit: () -> Unit) {
     val fieldColors = OutlinedTextFieldDefaults.colors(
         focusedBorderColor = Accent, unfocusedBorderColor = KeyBgPressed,
         focusedLabelColor = Accent, cursorColor = Accent,
+        unfocusedLabelColor = Color(0xFFC9D1D9), unfocusedPlaceholderColor = Color(0xFF6B7682),
+        focusedSupportingTextColor = Color(0xFF9AA4AE), unfocusedSupportingTextColor = Color(0xFF9AA4AE),
     )
     val mono = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
 
@@ -136,27 +138,29 @@ fun SshScreen(onExit: () -> Unit) {
             Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
-                        host, { host = it }, label = { Text("Host") }, placeholder = { Text("192.168.1.20") },
+                        host, { host = it }, label = { Text("Computer address (IP or name)") }, placeholder = { Text("192.168.1.20") },
+                        supportingText = { Text("Linux: hostname -I · Windows: ipconfig") },
                         singleLine = true, shape = fieldShape, colors = fieldColors, textStyle = mono,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedTextField(
-                            user, { user = it }, label = { Text("User") }, singleLine = true,
+                            user, { user = it }, label = { Text("Username") }, placeholder = { Text("your login") }, singleLine = true,
                             shape = fieldShape, colors = fieldColors, textStyle = mono,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                             modifier = Modifier.weight(1f),
                         )
                         OutlinedTextField(
-                            port, { v -> port = v.filter { it.isDigit() }.take(5) }, label = { Text("Port") }, singleLine = true,
+                            port, { v -> port = v.filter { it.isDigit() }.take(5) }, label = { Text("Port") }, placeholder = { Text("22") }, singleLine = true,
                             shape = fieldShape, colors = fieldColors, textStyle = mono,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
                             modifier = Modifier.width(96.dp),
                         )
                     }
                     OutlinedTextField(
-                        pass, { pass = it }, label = { Text("Password") }, singleLine = true,
+                        pass, { pass = it }, label = { Text("Password") },
+                        supportingText = { Text("The password you use to log in to that computer") }, singleLine = true,
                         shape = fieldShape, colors = fieldColors,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
