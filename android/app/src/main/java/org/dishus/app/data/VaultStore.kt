@@ -42,10 +42,11 @@ class VaultStore(context: Context) {
         return c.doFinal(raw, IV_LEN, raw.size - IV_LEN)
     }
 
-    /** Delete everything: vault, biometric blob and both keys. */
+    /** Delete everything: vault, biometric blob, saved SSH logins and both keys. */
     fun wipe() {
         vaultFile.delete()
         bioFile.delete()
+        dir.listFiles { f -> f.name.startsWith(SSH_PREFIX) }?.forEach { it.delete() }
         runCatching { ks.deleteEntry(WRAP_ALIAS) }
         runCatching { ks.deleteEntry(BIO_ALIAS) }
     }
@@ -92,6 +93,37 @@ class VaultStore(context: Context) {
         runCatching { ks.deleteEntry(BIO_ALIAS) }
     }
 
+    // ---- saved SSH logins, one file per paired PC, wrapped with the vault's Keystore key ----
+
+    private fun sshFile(pcId: String): File {
+        require(pcId.all { it.isLetterOrDigit() }) { "bad PC id" }
+        return File(dir, SSH_PREFIX + pcId)
+    }
+
+    fun saveSshLogin(pcId: String, user: String, password: String) {
+        val plain = (user + "\u0000" + password).toByteArray(Charsets.UTF_8)
+        try {
+            val c = Cipher.getInstance(TRANSFORM)
+            c.init(Cipher.ENCRYPT_MODE, key(WRAP_ALIAS, biometric = false))
+            writeAtomic(sshFile(pcId), c.iv + c.doFinal(plain))
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    /** (user, password), or null if none is saved or it can't be read any more. */
+    fun sshLogin(pcId: String): Pair<String, String>? = runCatching {
+        val raw = sshFile(pcId).readBytes()
+        val c = Cipher.getInstance(TRANSFORM)
+        c.init(Cipher.DECRYPT_MODE, key(WRAP_ALIAS, biometric = false), GCMParameterSpec(128, raw, 0, IV_LEN))
+        val s = String(c.doFinal(raw, IV_LEN, raw.size - IV_LEN), Charsets.UTF_8)
+        s.substringBefore('\u0000') to s.substringAfter('\u0000')
+    }.getOrNull()
+
+    fun forgetSshLogin(pcId: String) {
+        runCatching { sshFile(pcId).delete() }
+    }
+
     // ---- internals ----
 
     private fun key(alias: String, biometric: Boolean): SecretKey {
@@ -135,5 +167,6 @@ class VaultStore(context: Context) {
         private const val BIO_ALIAS = "dishus_vault_bio"
         private const val TRANSFORM = "AES/GCM/NoPadding"
         private const val IV_LEN = 12
+        private const val SSH_PREFIX = "ssh-"
     }
 }

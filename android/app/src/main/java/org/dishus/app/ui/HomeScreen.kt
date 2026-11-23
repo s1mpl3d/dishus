@@ -77,6 +77,7 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit, onSsh: () -> Unit) {
         val pc = pendingForget ?: return
         pendingForget = null
         runCatching { app.core.forgetPc(pc.id); app.persistVault() }
+        app.vault.forgetSshLogin(pc.id)
         pcs = runCatching { app.core.pairedPcs() }.getOrDefault(emptyList())
     }
     LaunchedEffect(pendingForget) {

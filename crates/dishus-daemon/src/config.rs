@@ -24,6 +24,8 @@ pub struct Config {
     /// Fixed UDP port for direct connections (0 = random). Not a listening TCP port; QUIC only
     /// answers peers that pass the allowlist gate. Set it only if you forward it on your router.
     pub udp_port: u16,
+    /// The local SSH server the phone's SSH mode is tunnelled to (on 127.0.0.1).
+    pub ssh_port: u16,
     pub video: VideoConfig,
 }
 
@@ -65,6 +67,7 @@ impl Default for Config {
             expiry_days: DEFAULT_EXPIRY_DAYS,
             pairing_ttl_secs: 60,
             udp_port: 0,
+            ssh_port: dishus_proto::SSH_PORT,
             video: VideoConfig::default(),
         }
     }

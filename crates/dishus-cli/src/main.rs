@@ -78,11 +78,11 @@ fn doctor() -> Result<()> {
         .ok()
         .and_then(|p| p.parent().map(|d| d.join(&name)))
         .filter(|p| p.is_file());
-    let daemon = sibling.unwrap_or_else(|| PathBuf::from("dishus-daemon"));
-    let status = std::process::Command::new(&daemon)
+    let demon = sibling.unwrap_or_else(|| PathBuf::from("dishus-daemon"));
+    let status = std::process::Command::new(&demon)
         .arg("--doctor")
         .status()
-        .with_context(|| format!("running {} --doctor", daemon.display()))?;
+        .with_context(|| format!("running {} --doctor", demon.display()))?;
     std::process::exit(status.code().unwrap_or(1));
 }
 

@@ -18,6 +18,16 @@ class Prefs(context: Context) {
         get() = sp.getString("last_pc", null)
         set(v) = sp.edit().putString("last_pc", v).apply()
 
+    /** Last SSH target, so the form comes back filled. The password is never stored. */
+    var sshTarget: Triple<String, String, String>
+        get() = Triple(sp.getString("ssh_host", "")!!, sp.getString("ssh_user", "")!!, sp.getString("ssh_port", "22")!!)
+        set(v) = sp.edit().putString("ssh_host", v.first).putString("ssh_user", v.second).putString("ssh_port", v.third).apply()
+
+    /** PC id the SSH screen last used through DiShus; "" = a typed address. */
+    var sshPc: String
+        get() = sp.getString("ssh_pc", "")!!
+        set(v) = sp.edit().putString("ssh_pc", v).apply()
+
     var autoConnect: Boolean
         get() = sp.getBoolean("auto_connect", true)
         set(v) = sp.edit().putBoolean("auto_connect", v).apply()

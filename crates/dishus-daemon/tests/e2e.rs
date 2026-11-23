@@ -230,17 +230,22 @@ impl Pc {
     }
 
     async fn start_full(capture_open: Duration, stall_after: Option<u64>) -> Self {
-        Self::start_inner(capture_open, stall_after, false).await
+        Self::start_inner(capture_open, stall_after, false, dishus_proto::SSH_PORT).await
     }
 
     async fn start_slow_audio() -> Self {
-        Self::start_inner(Duration::ZERO, None, true).await
+        Self::start_inner(Duration::ZERO, None, true, dishus_proto::SSH_PORT).await
+    }
+
+    async fn start_ssh(ssh_port: u16) -> Self {
+        Self::start_inner(Duration::ZERO, None, false, ssh_port).await
     }
 
     async fn start_inner(
         capture_open: Duration,
         stall_after: Option<u64>,
         slow_first_audio: bool,
+        ssh_port: u16,
     ) -> Self {
         let audio_opens = Arc::new(AtomicU32::new(0));
         let dir = tempfile::tempdir().unwrap();
@@ -248,6 +253,7 @@ impl Pc {
         paths.ensure().unwrap();
         let cfg = Config {
             pc_name: "test-pc".into(),
+            ssh_port,
             ..Default::default()
         };
         let input = RecInput::default();
@@ -1034,4 +1040,74 @@ async fn a_capture_that_stays_slow_is_restarted_and_numbering_continues() {
         "restarted only once"
     );
     pinger.abort();
+}
+
+/// A local TCP echo server standing in for sshd.
+async fn echo_server() -> u16 {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = l.accept().await {
+            tokio::spawn(async move {
+                let (mut r, mut w) = s.into_split();
+                let _ = tokio::io::copy(&mut r, &mut w).await;
+            });
+        }
+    });
+    port
+}
+
+async fn ssh_pc(ssh_port: u16) -> (Pc, Client, PairedPc) {
+    let pc = Pc::start_ssh(ssh_port).await;
+    let ph = phone().await;
+    ph.pair(&pc.pairing_link(), "Pixel").await.unwrap();
+    let paired = pc.as_paired();
+    (pc, ph, paired)
+}
+
+async fn roundtrip(port: u16, msg: &[u8]) -> std::io::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+    s.write_all(msg).await?;
+    let mut buf = vec![0; msg.len()];
+    timeout(Duration::from_secs(5), s.read_exact(&mut buf)).await??;
+    Ok(buf)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_tunnel_reaches_local_ssh_server() {
+    let (_pc, ph, paired) = ssh_pc(echo_server().await).await;
+    let (port, task) = ph.ssh_tunnel(&paired).await.unwrap();
+    // Two connections over one tunnel, like a reconnecting SSH client.
+    assert_eq!(
+        roundtrip(port, b"SSH-2.0-test\r\n").await.unwrap(),
+        b"SSH-2.0-test\r\n"
+    );
+    assert_eq!(roundtrip(port, b"again").await.unwrap(), b"again");
+    task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_tunnel_refuses_unpaired_phone() {
+    let (pc, _ph, paired) = ssh_pc(echo_server().await).await;
+    let stranger = phone().await;
+    // Refused by the gate: either the connect fails or the first stream does.
+    if let Ok((port, _t)) = stranger.ssh_tunnel(&paired).await {
+        assert!(roundtrip(port, b"x").await.is_err());
+    }
+    assert!(pc.state.device(&stranger.endpoint_id()).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_tunnel_without_ssh_server_closes() {
+    // Bind then drop: a port nobody listens on.
+    let dead = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (_pc, ph, paired) = ssh_pc(dead).await;
+    let (port, _t) = ph.ssh_tunnel(&paired).await.unwrap();
+    assert!(roundtrip(port, b"SSH-2.0-test\r\n").await.is_err());
 }

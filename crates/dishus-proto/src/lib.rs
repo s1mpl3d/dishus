@@ -36,6 +36,10 @@ pub const ALPN_SESSION: &[u8] = b"dishus/session/1";
 pub const ALPN_SESSION_V2: &[u8] = b"dishus/session/2";
 /// ALPN of the pairing handshake. Only accepted while the pairing window is open.
 pub const ALPN_PAIR: &[u8] = b"dishus/pair/1";
+/// SSH tunnel: each bi stream the phone opens is piped to the PC's own SSH server
+/// (127.0.0.1:[`SSH_PORT`]). Same allowlist as a session; SSH still asks for the PC's login.
+pub const ALPN_SSH: &[u8] = b"dishus/ssh/1";
+pub const SSH_PORT: u16 = 22;
 
 /// The release name people see: `0.31` for crate version 0.31.0 (releases are X.31 and X.69).
 pub const VERSION: &str = short_version(env!("CARGO_PKG_VERSION"));
@@ -74,6 +78,8 @@ pub mod close_code {
     pub const LOCKDOWN: u32 = 2;
     /// The pairing expired; `dishus renew` on the PC or pair again.
     pub const EXPIRED: u32 = 3;
+    /// Stream reset on an SSH tunnel: nothing listens on the PC's SSH port.
+    pub const SSH_UNAVAILABLE: u32 = 4;
 }
 
 /// Hard cap on a single control-stream frame (bytes, excluding the 4-byte length prefix).

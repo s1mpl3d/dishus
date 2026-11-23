@@ -18,10 +18,10 @@ use iroh::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 use dishus_proto::{
-    ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError,
-    HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest,
-    PairResponse, PairingInfo, SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader,
-    frame::Validate, read_frame, write_frame,
+    ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2, ALPN_SSH, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg,
+    FrameError, HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MAX_VIDEO_FRAME, PROTO_VERSION,
+    PairRequest, PairResponse, PairingInfo, SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams,
+    VideoHeader, frame::Validate, read_frame, write_frame,
 };
 
 use crate::vault::PairedPc;
@@ -243,6 +243,59 @@ impl Client {
             None => e,
         })
     }
+}
+
+impl Client {
+    /// Opens an SSH tunnel to a paired PC: returns a loopback port whose TCP connections are
+    /// carried over iroh (direct or relayed, so it also works away from home) to the PC's own
+    /// SSH server. The tunnel lives until the returned task is aborted or the PC closes it.
+    pub async fn ssh_tunnel(&self, pc: &PairedPc) -> Result<(u16, JoinHandle<()>)> {
+        let addr = pc_addr(&pc.endpoint_id, &pc.relays, &pc.addrs)?;
+        let conn = timeout(CONNECT_TIMEOUT, async {
+            anyhow::Ok(self.endpoint.connect(addr, ALPN_SSH).await?)
+        })
+        .await
+        .context("timed out reaching the PC")?
+        .map_err(|e| match Refusal::find(&e) {
+            Some(r) => anyhow::Error::new(r),
+            None => e.context("could not reach the PC (offline, or its DiShus is too old for SSH)"),
+        })?;
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        let task = tokio::spawn(async move {
+            loop {
+                let tcp = tokio::select! {
+                    a = listener.accept() => match a { Ok((t, _)) => t, Err(_) => break },
+                    _ = conn.closed() => break,
+                };
+                let Ok((send, recv)) = conn.open_bi().await else {
+                    break;
+                };
+                tokio::spawn(pipe_tcp(tcp, send, recv));
+            }
+            conn.close(0u32.into(), b"");
+        });
+        Ok((port, task))
+    }
+}
+
+async fn pipe_tcp(
+    tcp: tokio::net::TcpStream,
+    mut send: iroh::endpoint::SendStream,
+    mut recv: iroh::endpoint::RecvStream,
+) {
+    let (mut tr, mut tw) = tcp.into_split();
+    let up = async {
+        tokio::io::copy(&mut tr, &mut send).await?;
+        send.finish()?;
+        std::io::Result::Ok(())
+    };
+    let down = async {
+        tokio::io::copy(&mut recv, &mut tw).await?;
+        tokio::io::AsyncWriteExt::shutdown(&mut tw).await
+    };
+    // Either side failing ends both: dropping the halves closes the TCP socket and the stream.
+    let _ = tokio::try_join!(up, down);
 }
 
 /// One Opus packet from the PC (session/2). `seq` gaps are lost or dropped packets.

@@ -80,8 +80,8 @@ fn install() -> Result<PathBuf> {
     let dir = install_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let me = std::env::current_exe().context("locating own executable")?;
-    let daemon = dir.join(DAEMON_EXE);
-    let daemon_bytes = match DAEMON {
+    let demon = dir.join(DAEMON_EXE);
+    let demon_bytes = match DAEMON {
         Some(b) => b.to_vec(),
         // Development builds: the daemon next to this exe.
         None => {
@@ -97,7 +97,7 @@ fn install() -> Result<PathBuf> {
 
     println!("Installing for this user in {}", dir.display());
     stop_daemons();
-    write_retry(&daemon, &daemon_bytes)?;
+    write_retry(&demon, &demon_bytes)?;
     let cli = dir.join("dishus.exe");
     let running_installed = std::fs::canonicalize(&me).ok() == std::fs::canonicalize(&cli).ok();
     if !running_installed {
@@ -107,7 +107,7 @@ fn install() -> Result<PathBuf> {
     reg::set(
         reg::RUN_KEY,
         RUN_VALUE,
-        &format!("\"{}\"", daemon.display()),
+        &format!("\"{}\"", demon.display()),
         false,
     )
     .context("setting DiShus to start at sign-in")?;
@@ -117,13 +117,13 @@ fn install() -> Result<PathBuf> {
     }
     println!("  ✓ starts by itself when you sign in");
 
-    Command::new(&daemon)
+    Command::new(&demon)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
         .spawn()
-        .with_context(|| format!("starting {}", daemon.display()))?;
+        .with_context(|| format!("starting {}", demon.display()))?;
     Ok(dir)
 }
 
@@ -265,11 +265,11 @@ pub async fn run() -> Result<()> {
 /// `dishus uninstall`: stop DiShus, remove it from sign-in and PATH, delete the program files.
 pub fn uninstall() -> Result<()> {
     let dir = install_dir()?;
-    let daemon = dir.join(DAEMON_EXE);
+    let demon = dir.join(DAEMON_EXE);
     stop_daemons();
     reg::delete(reg::RUN_KEY, RUN_VALUE)?;
     reg::remove_from_user_path(&dir.to_string_lossy())?;
-    reg::delete(GPU_PREFS, &daemon.to_string_lossy())?;
+    reg::delete(GPU_PREFS, &demon.to_string_lossy())?;
     reg::delete_tree(TOAST_KEY)?;
     let me = std::env::current_exe()?;
     let inside = std::fs::canonicalize(&me)

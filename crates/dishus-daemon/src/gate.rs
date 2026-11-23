@@ -19,7 +19,7 @@ use iroh::{
     protocol::IncomingFilterOutcome,
 };
 
-use dishus_proto::{ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2};
+use dishus_proto::{ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2, ALPN_SSH};
 
 use crate::state::AppState;
 
@@ -32,9 +32,9 @@ impl fmt::Debug for Gate {
     }
 }
 
-/// Either session version: the same allowlist and the same refusal reasons apply.
+/// Either session version or the SSH tunnel: the same allowlist and refusal reasons apply.
 fn is_session(alpn: &[u8]) -> bool {
-    alpn == ALPN_SESSION || alpn == ALPN_SESSION_V2
+    alpn == ALPN_SESSION || alpn == ALPN_SESSION_V2 || alpn == ALPN_SSH
 }
 
 /// Pure decision used by the hook (also unit-tested).

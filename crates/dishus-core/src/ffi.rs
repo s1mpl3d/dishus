@@ -409,6 +409,29 @@ impl Core {
         }))
     }
 
+    /// SSH to a paired PC through DiShus (no IP needed, works away from home). Connect an SSH
+    /// client to 127.0.0.1:`port()` of the returned tunnel.
+    pub async fn ssh_tunnel(&self, pc_id: String) -> Result<Arc<SshTunnel>, DishusError> {
+        let pc = self.with_vault(|u| {
+            u.data
+                .pcs
+                .iter()
+                .find(|p| data_encoding_hex(&p.endpoint_id) == pc_id)
+                .cloned()
+                .ok_or(DishusError::InvalidInput {
+                    msg: "unknown PC".into(),
+                })
+        })?;
+        let client = self.client().await?;
+        let (port, task) = self
+            .rt
+            .spawn(async move { client.ssh_tunnel(&pc).await })
+            .await
+            .map_err(|e| DishusError::Internal { msg: e.to_string() })?
+            .map_err(net_err)?;
+        Ok(Arc::new(SshTunnel { port, task }))
+    }
+
     /// Update the stored expiry after an in-session renewal.
     pub fn record_renewal(&self, pc_id: String, expires_at: u64) -> Result<(), DishusError> {
         self.with_vault(|u| {
@@ -432,6 +455,30 @@ impl Drop for Core {
         {
             u.data.secret_key.zeroize();
         }
+    }
+}
+
+#[derive(uniffi::Object)]
+pub struct SshTunnel {
+    port: u16,
+    task: tokio::task::JoinHandle<()>,
+}
+
+#[uniffi::export]
+impl SshTunnel {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Ends the tunnel. (Not `close`: UniFFI already generates that, to free the object.)
+    pub fn stop(&self) {
+        self.task.abort();
+    }
+}
+
+impl Drop for SshTunnel {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 

@@ -73,7 +73,7 @@ private fun Root(app: DishusApp, activity: FragmentActivity) {
     var ssh by rememberSaveable { mutableStateOf(false) }
     val pc = remotePc
     if (ssh) {
-        SshScreen(onExit = { ssh = false })
+        SshScreen(app, onExit = { ssh = false })
     } else if (pc == null) {
         HomeScreen(app, onConnect = { id -> app.prefs.lastPcId = id; remotePc = id }, onSsh = { ssh = true })
     } else {

@@ -12,7 +12,8 @@ use iroh::{
 use tokio::time::timeout;
 
 use dishus_proto::{
-    ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2, PairRequest, PairingInfo, read_frame, write_frame,
+    ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2, ALPN_SSH, PairRequest, PairingInfo, read_frame,
+    write_frame,
 };
 
 use crate::{
@@ -181,6 +182,7 @@ pub async fn spawn_router(
         // Preferred first: a phone that offers both gets session/2 (audio).
         .accept(ALPN_SESSION_V2, SessionHandler(state.clone()))
         .accept(ALPN_SESSION, SessionHandler(state.clone()))
+        .accept(ALPN_SSH, SshHandler(state.config.ssh_port))
         .accept(ALPN_PAIR, PairHandler(state))
         .spawn())
 }
@@ -225,6 +227,52 @@ impl ProtocolHandler for SessionHandler {
         }
         Ok(())
     }
+}
+
+/// Pipes every bi stream of an (already gate-checked) SSH connection to the local SSH server.
+#[derive(Debug, Clone)]
+struct SshHandler(u16);
+
+impl ProtocolHandler for SshHandler {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        let peer = conn.remote_id().fmt_short();
+        let port = self.0;
+        while let Ok((send, recv)) = conn.accept_bi().await {
+            tokio::spawn(async move {
+                if let Err(e) = pipe_ssh(send, recv, port).await {
+                    tracing::info!("ssh tunnel from {peer}: {e:#}");
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
+async fn pipe_ssh(
+    mut send: iroh::endpoint::SendStream,
+    mut recv: iroh::endpoint::RecvStream,
+    port: u16,
+) -> Result<()> {
+    let tcp = match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+        Ok(t) => t,
+        Err(e) => {
+            // The phone shows this close code as "the SSH server is not on".
+            let _ = send.reset(dishus_proto::close_code::SSH_UNAVAILABLE.into());
+            return Err(e).context("SSH server not reachable on this PC");
+        }
+    };
+    let (mut tr, mut tw) = tcp.into_split();
+    let up = async {
+        tokio::io::copy(&mut recv, &mut tw).await?;
+        tokio::io::AsyncWriteExt::shutdown(&mut tw).await
+    };
+    let down = async {
+        tokio::io::copy(&mut tr, &mut send).await?;
+        send.finish()?;
+        std::io::Result::Ok(())
+    };
+    tokio::try_join!(up, down)?;
+    Ok(())
 }
 
 /// Max size of a pairing request on the wire.
