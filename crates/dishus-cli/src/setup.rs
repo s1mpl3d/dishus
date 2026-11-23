@@ -165,12 +165,91 @@ async fn setup() -> Result<()> {
         }
         println!();
     }
+    offer_ssh();
     println!(
         "\nDone. DiShus runs in the background and starts by itself when you sign in.\n\
          On the phone, tap this PC to connect.\n\
          To pair another phone later, open this file again or run `dishus pair`."
     );
     Ok(())
+}
+
+/// Runs elevated: installs and starts Windows' own OpenSSH server and opens port 22.
+const SSH_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
+try {
+    if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
+        Write-Host 'Installing OpenSSH Server (this can take a minute)...'
+        Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+    }
+    Set-Service sshd -StartupType Automatic
+    Start-Service sshd
+    if (-not (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' `
+            -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+    }
+} catch {
+    Write-Host "Error: $_"
+    Read-Host 'Press Enter to close'
+    exit 1
+}
+"#;
+
+/// Optional: turn on SSH for the phone's SSH mode. It needs administrator rights (one UAC
+/// prompt), so it is only done when the user answers yes.
+fn offer_ssh() {
+    print!(
+        "\nAlso enable SSH, so the phone's SSH mode can open a terminal on this PC?\n\
+         Windows will ask for administrator rights once. [y/N] "
+    );
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().lock().read_line(&mut answer).is_err()
+        || !answer.trim().eq_ignore_ascii_case("y")
+    {
+        return;
+    }
+    if let Err(e) = enable_ssh() {
+        println!("  ! SSH was not enabled: {e:#}");
+        return;
+    }
+    println!("  ✓ SSH is on (port 22, starts with Windows)");
+    let ip = local_ip().map_or_else(|| "(see ipconfig)".to_owned(), |ip| ip.to_string());
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    println!(
+        "  In the phone's SSH screen: address {ip}, username {user}, port 22,\n  \
+         and your Windows password (not the PIN)."
+    );
+}
+
+fn enable_ssh() -> Result<()> {
+    let script = std::env::temp_dir().join("dishus-enable-ssh.ps1");
+    std::fs::write(&script, SSH_SCRIPT).with_context(|| format!("writing {}", script.display()))?;
+    // The path goes through an env var so no quoting of it is needed on this command line;
+    // [char]34 is the double quote the elevated command line needs around it.
+    let status = Command::new("powershell")
+        .env("DISHUS_SSH_PS1", &script)
+        .args(["-NoProfile", "-Command"])
+        .arg(
+            "$p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList \
+             ('-NoProfile -ExecutionPolicy Bypass -File ' + [char]34 + $env:DISHUS_SSH_PS1 + [char]34); \
+             if (-not $p) { exit 1 }; exit $p.ExitCode",
+        )
+        .status()
+        .context("starting PowerShell");
+    let _ = std::fs::remove_file(&script);
+    if !status?.success() {
+        bail!("cancelled, or the setup failed");
+    }
+    Ok(())
+}
+
+/// The LAN address other devices reach this PC on. Connecting a UDP socket sends nothing; it
+/// only picks the outgoing interface.
+// shortcut: with a VPN up on the PC this may print the VPN address; ipconfig then has the right one.
+fn local_ip() -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("8.8.8.8:80").ok()?;
+    s.local_addr().ok().map(|a| a.ip())
 }
 
 pub async fn run() -> Result<()> {
