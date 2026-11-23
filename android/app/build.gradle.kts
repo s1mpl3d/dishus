@@ -51,6 +51,8 @@ android {
     buildFeatures { compose = true }
     packaging {
         jniLibs { useLegacyPackaging = false }
+        // jsch and bcprov both ship these OSGi manifests; Android doesn't use it.
+        resources { excludes += "META-INF/versions/*/OSGI-INF/MANIFEST.MF" }
     }
 }
 
@@ -70,6 +72,9 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.15.0@aar")
     // SSH client for the terminal mode.
     implementation("com.github.mwiede:jsch:0.2.20")
+    // JSch needs Bouncy Castle for ed25519/ed448 on Android (no JDK EdDSA there).
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
+    testImplementation("junit:junit:4.13.2")
     // QR scanning (camera permission is requested only when the user taps "Scan").
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

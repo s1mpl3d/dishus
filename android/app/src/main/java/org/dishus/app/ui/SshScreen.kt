@@ -42,7 +42,7 @@ import java.io.OutputStream
 // render; upgrade to a real emulator (e.g. termux terminal-view) if full-screen apps matter.
 // shortcut: host keys are accepted without checking (StrictHostKeyChecking=no); pin them before
 // using over untrusted networks.
-private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007|\r")
+private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007|\r|\u0007")
 
 @Composable
 fun SshScreen(onExit: () -> Unit) {
@@ -52,6 +52,7 @@ fun SshScreen(onExit: () -> Unit) {
     var pass by remember { mutableStateOf("") }
     var out by remember { mutableStateOf("") }
     var line by remember { mutableStateOf("") }
+    var confirmExit by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
     var stream by remember { mutableStateOf<OutputStream?>(null) }
     var session by remember { mutableStateOf<Session?>(null) }
@@ -61,7 +62,17 @@ fun SshScreen(onExit: () -> Unit) {
 
     fun close() { runCatching { session?.disconnect() }; session = null; stream = null }
     DisposableEffect(Unit) { onDispose { close() } }
-    BackHandler { close(); onExit() }
+    // A stray Back must not drop a live session: ask first. Without one, Back leaves.
+    BackHandler { if (session != null) confirmExit = true else onExit() }
+    if (confirmExit) {
+        AlertDialog(
+            onDismissRequest = { confirmExit = false },
+            title = { Text("Disconnect?") },
+            text = { Text("This closes the SSH session.") },
+            confirmButton = { TextButton(onClick = { confirmExit = false; close() }) { Text("Disconnect") } },
+            dismissButton = { TextButton(onClick = { confirmExit = false }) { Text("Cancel") } },
+        )
+    }
     LaunchedEffect(out) { scroll.scrollTo(scroll.maxValue) }
 
     fun send(s: String) {
@@ -89,7 +100,7 @@ fun SshScreen(onExit: () -> Unit) {
                     val n = input.read(buf)
                     if (n < 0) break
                     val text = ANSI.replace(String(buf, 0, n), "")
-                    withContext(Dispatchers.Main) { out = (out + text).takeLast(50_000) }
+                    withContext(Dispatchers.Main) { out = applyOutput(out, text) }
                 }
                 withContext(Dispatchers.Main) { status = "disconnected"; close() }
             }.onFailure { e -> withContext(Dispatchers.Main) { status = "error: ${e.message}"; close() } }
@@ -231,3 +242,13 @@ fun SshScreen(onExit: () -> Unit) {
 }
 
 private val KeyboardBg = Color(0xFF0B0E11)
+
+/** Appends shell output; a backspace erases the previous character on the line (shells redraw
+ *  the input line with them). Keeps the last 50k chars. */
+internal fun applyOutput(out: String, text: String): String {
+    val sb = StringBuilder(out)
+    for (ch in text) {
+        if (ch == '\b') { if (sb.isNotEmpty() && sb.last() != '\n') sb.setLength(sb.length - 1) } else sb.append(ch)
+    }
+    return if (sb.length > 50_000) sb.substring(sb.length - 50_000) else sb.toString()
+}
