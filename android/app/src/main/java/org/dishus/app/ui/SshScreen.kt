@@ -1,51 +1,105 @@
 package org.dishus.app.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.graphics.Typeface
+import android.util.Log
+import android.view.HapticFeedbackConstants
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import android.view.HapticFeedbackConstants
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.res.ResourcesCompat
 import com.jcraft.jsch.ChannelShell
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
+import com.termux.terminal.KeyHandler
+import com.termux.terminal.TerminalSession
+import com.termux.terminal.TerminalSessionClient
+import com.termux.view.TerminalView
+import com.termux.view.TerminalViewClient
+import java.io.InputStream
+import java.io.OutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.InputStreamReader
-import java.io.OutputStream
 import org.dishus.app.DishusApp
+import org.dishus.app.R
 import uniffi.dishus_core.SshTunnel
 
-// shortcut: output is ANSI-stripped plain text, not a terminal emulator, so vim/top/htop won't
-// render; upgrade to a real emulator (e.g. termux terminal-view) if full-screen apps matter.
-// shortcut: host keys are accepted without checking (StrictHostKeyChecking=no); pin them before
-// using over untrusted networks.
-private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007|\r|\u0007")
+// shortcut: host keys are accepted without checking (StrictHostKeyChecking=no); through DiShus the
+// tunnel already proves the PC's identity, but a typed address does not: pin keys before using
+// that over untrusted networks.
+
+private const val TAG = "DishusSsh"
+
+/** The shell of an already logged-in SSH session, fed to Termux's emulator (xterm-256color). */
+private class ChannelTransport(val session: Session, val onClose: () -> Unit) : TerminalSession.Transport {
+    @Volatile private var channel: ChannelShell? = null
+    private val io = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+    private var pending: java.util.concurrent.ScheduledFuture<*>? = null
+    @Volatile private var sentSize = 0 to 0
+
+    override fun connect(columns: Int, rows: Int) {
+        val ch = session.openChannel("shell") as ChannelShell
+        ch.setPtyType("xterm-256color")
+        ch.setPtySize(columns, rows, 0, 0)
+        channel = ch
+        sentSize = columns to rows
+        Log.d(TAG, "shell open ${columns}x$rows")
+        ch.connect(15_000)
+    }
+
+    override fun getInputStream(): InputStream = channel!!.inputStream
+    override fun getOutputStream(): OutputStream = channel!!.outputStream
+    // Termux calls this on the main thread, many times while the keyboard animates. Writing to the
+    // socket from there broke a packet and Windows' sshd dropped us ("incomplete message"), so
+    // send only the final size, from a background thread.
+    override fun resize(columns: Int, rows: Int) {
+        pending?.cancel(false)
+        pending = io.schedule({
+            if (sentSize != columns to rows) {
+                sentSize = columns to rows
+                Log.d(TAG, "window-change ${columns}x$rows")
+                runCatching { channel?.setPtySize(columns, rows, 0, 0) }.onFailure { Log.w(TAG, "window-change failed", it) }
+            }
+        }, 250, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+    override fun close() {
+        io.shutdownNow()
+        runCatching { channel?.disconnect() }; runCatching { session.disconnect() }; onClose()
+    }
+}
 
 @Composable
 fun SshScreen(app: DishusApp, onExit: () -> Unit) {
@@ -62,29 +116,24 @@ fun SshScreen(app: DishusApp, onExit: () -> Unit) {
     var user by rememberSaveable { mutableStateOf(saved.second) }
     var port by rememberSaveable { mutableStateOf(saved.third) }
     var pass by remember { mutableStateOf("") }
-    var out by remember { mutableStateOf("") }
-    var line by remember { mutableStateOf("") }
     var confirmExit by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
-    var stream by remember { mutableStateOf<OutputStream?>(null) }
-    var session by remember { mutableStateOf<Session?>(null) }
+    var term by remember { mutableStateOf<TerminalSession?>(null) }
     var tunnel by remember { mutableStateOf<SshTunnel?>(null) }
     // A PC's saved login fills the form when it is picked.
     LaunchedEffect(pcId) {
         if (pcId.isEmpty()) { user = saved.second; pass = "" }
-        else app.vault.sshLogin(pcId)?.let { (u, p) -> user = u; pass = p } ?: run { pass = "" }
+        else app.vault.sshLogin(pcId)?.let { (u, p) -> user = u; pass = p } ?: run { user = ""; pass = "" }
     }
     val scope = rememberCoroutineScope()
-    val scroll = rememberScrollState()
-    val haptic = LocalView.current
 
     fun close() {
-        runCatching { session?.disconnect() }; session = null; stream = null
+        term?.finishIfRunning(); term = null
         runCatching { tunnel?.stop(); tunnel?.close() }; tunnel = null
     }
     DisposableEffect(Unit) { onDispose { close() } }
     // A stray Back must not drop a live session: ask first. Without one, Back leaves.
-    BackHandler { if (session != null) confirmExit = true else onExit() }
+    BackHandler { if (term != null) confirmExit = true else onExit() }
     if (confirmExit) {
         AlertDialog(
             onDismissRequest = { confirmExit = false },
@@ -94,15 +143,7 @@ fun SshScreen(app: DishusApp, onExit: () -> Unit) {
             dismissButton = { TextButton(onClick = { confirmExit = false }) { Text("Cancel") } },
         )
     }
-    LaunchedEffect(out) { scroll.scrollTo(scroll.maxValue) }
-
-    fun send(s: String) {
-        val o = stream ?: return
-        scope.launch(Dispatchers.IO) { runCatching { o.write(s.toByteArray()); o.flush() } }
-    }
-
     fun connect() {
-        out = ""
         status = "connecting…"
         val via = pc
         prefs.sshPc = via?.id ?: ""
@@ -119,31 +160,18 @@ fun SshScreen(app: DishusApp, onExit: () -> Unit) {
                 s.setPassword(pass)
                 s.setConfig("StrictHostKeyChecking", "no")
                 s.connect(15_000)
-                val ch = s.openChannel("shell") as ChannelShell
-                ch.setPtyType("dumb")
-                val input = ch.inputStream
-                stream = ch.outputStream
-                ch.connect(15_000)
-                session = s
                 if (via != null) {
                     if (keepLogin) app.vault.saveSshLogin(via.id, user, pass) else app.vault.forgetSshLogin(via.id)
                 }
-                withContext(Dispatchers.Main) { status = "" }
-                // A reader, not raw bytes: a UTF-8 character split across two reads stays whole.
-                val reader = InputStreamReader(input, Charsets.UTF_8)
-                val buf = CharArray(4096)
-                while (true) {
-                    val n = reader.read(buf)
-                    if (n < 0) break
-                    val text = ANSI.replace(String(buf, 0, n), "")
-                    withContext(Dispatchers.Main) { out = applyOutput(out, text) }
+                withContext(Dispatchers.Main) {
+                    status = ""
+                    // Logged in: the shell runs in Termux's emulator (colours, cursor, full-screen apps).
+                    term = TerminalSession(ChannelTransport(s) { }, 2000, NoopSessionClient)
                 }
-                withContext(Dispatchers.Main) { status = "disconnected"; close() }
             }.onFailure { e ->
                 withContext(Dispatchers.Main) {
-                    // Closed by the user (✕ / Back): the read fails, but that is not an error.
-                    if (session != null || status == "connecting…") status = friendlyError(e, via?.name ?: host.trim(), port, viaDishus = via != null)
-                    close()
+                    status = friendlyError(e, via?.name ?: host.trim(), port, viaDishus = via != null)
+                    runCatching { tunnel?.stop(); tunnel?.close() }; tunnel = null
                 }
             }
         }
@@ -161,7 +189,13 @@ fun SshScreen(app: DishusApp, onExit: () -> Unit) {
     )
     val mono = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
 
-    if (session == null) {
+    val t = term
+    if (t != null) {
+        val label = "$user@$target" + if (pc == null && port != "22") ":$port" else ""
+        TermuxTerminal(t, label, onClose = { close() })
+        return
+    }
+    run {
         Column(
             Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding().imePadding()
                 .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
@@ -207,7 +241,7 @@ fun SshScreen(app: DishusApp, onExit: () -> Unit) {
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedTextField(
-                            user, { user = it }, label = { Text("Username") }, placeholder = { Text("your login") }, singleLine = true,
+                            user, { user = it }, label = { Text("Username") }, placeholder = { Text("login name on that PC") }, singleLine = true,
                             shape = fieldShape, colors = fieldColors, textStyle = mono,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                             modifier = Modifier.weight(1f),
@@ -246,56 +280,10 @@ fun SshScreen(app: DishusApp, onExit: () -> Unit) {
                 }
             }
             if (status.isNotEmpty() && !connecting) {
-                val ended = status == "disconnected"
-                Surface(shape = RoundedCornerShape(12.dp), color = if (ended) KeyBg else Color(0x33FF8A80)) {
-                    Text(if (ended) "Session ended." else status,
-                        color = if (ended) Color(0xFFC9D1D9) else MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth().padding(12.dp))
+                Surface(shape = RoundedCornerShape(12.dp), color = Color(0x33FF8A80)) {
+                    Text(status, color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth().padding(12.dp))
                 }
             }
-            if (out.isNotEmpty()) {
-                Text(out.takeLast(2000), color = Color(0xFF8A949E), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            }
-        }
-        return
-    }
-
-    Column(Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding().imePadding()) {
-        Row(
-            Modifier.fillMaxWidth().background(KeyboardBg).padding(start = 14.dp, end = 4.dp).height(40.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.size(8.dp).clip(CircleShape).background(Accent))
-            Text(
-                "$user@$target" + if (pc == null && port != "22") ":$port" else "", color = Color(0xFFC9D1D9),
-                fontFamily = FontFamily.Monospace, fontSize = 13.sp, maxLines = 1,
-                modifier = Modifier.padding(start = 10.dp).weight(1f),
-            )
-            TextButton(onClick = { close() }) { Text("✕", color = Color(0xFF8A949E)) }
-        }
-        Text(
-            out, color = Color(0xFFE6EBEF), fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 17.sp,
-            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll).padding(horizontal = 10.dp, vertical = 6.dp),
-        )
-        Column(Modifier.fillMaxWidth().background(KeyboardBg).padding(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(Modifier.fillMaxWidth().height(38.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                for ((label, seq) in listOf("Tab" to "\t", "Esc" to "\u001B", "^C" to "\u0003", "^D" to "\u0004",
-                    "↑" to "\u001B[A", "↓" to "\u001B[B", "←" to "\u001B[D", "→" to "\u001B[C")) {
-                    Box(
-                        Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(8.dp)).background(KeyBg)
-                            .clickable { haptic.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); send(seq) },
-                        contentAlignment = Alignment.Center,
-                    ) { Text(label, color = Color(0xFFE6EBEF), fontFamily = FontFamily.Monospace, fontSize = 14.sp) }
-                }
-            }
-            OutlinedTextField(
-                line, { line = it }, singleLine = true, shape = RoundedCornerShape(12.dp), colors = fieldColors, textStyle = mono,
-                leadingIcon = { Text("$", color = Accent, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) },
-                trailingIcon = { TextButton(onClick = { send(line + "\n"); line = "" }) { Text("⏎", color = Accent, fontSize = 18.sp) } },
-                placeholder = { Text("command", fontFamily = FontFamily.Monospace) },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, autoCorrectEnabled = false),
-                keyboardActions = KeyboardActions(onSend = { send(line + "\n"); line = "" }),
-                modifier = Modifier.fillMaxWidth(),
-            )
         }
     }
 }
@@ -342,12 +330,169 @@ internal fun friendlyError(e: Throwable, host: String, port: String, viaDishus: 
     }
 }
 
-/** Appends shell output; a backspace erases the previous character on the line (shells redraw
- *  the input line with them). Keeps the last 50k chars. */
-internal fun applyOutput(out: String, text: String): String {
-    val sb = StringBuilder(out)
-    for (ch in text) {
-        if (ch == '\b') { if (sb.isNotEmpty() && sb.last() != '\n') sb.setLength(sb.length - 1) } else sb.append(ch)
+/** Termux's default extra keys. CTRL/ALT are one-shot toggles, as in Termux. */
+private val EXTRA_KEYS = listOf(
+    listOf("ESC", "/", "-", "HOME", "↑", "END", "PGUP"),
+    listOf("TAB", "CTRL", "ALT", "←", "↓", "→", "PGDN"),
+)
+
+private val KEYCODES = mapOf(
+    "ESC" to KeyEvent.KEYCODE_ESCAPE, "TAB" to KeyEvent.KEYCODE_TAB,
+    "HOME" to KeyEvent.KEYCODE_MOVE_HOME, "END" to KeyEvent.KEYCODE_MOVE_END,
+    "PGUP" to KeyEvent.KEYCODE_PAGE_UP, "PGDN" to KeyEvent.KEYCODE_PAGE_DOWN,
+    "↑" to KeyEvent.KEYCODE_DPAD_UP, "↓" to KeyEvent.KEYCODE_DPAD_DOWN,
+    "←" to KeyEvent.KEYCODE_DPAD_LEFT, "→" to KeyEvent.KEYCODE_DPAD_RIGHT,
+)
+
+@Composable
+private fun TermuxTerminal(session: TerminalSession, label: String, onClose: () -> Unit) {
+    var running by remember { mutableStateOf(true) }
+    val haptic = LocalView.current
+    var ctrl by remember { mutableStateOf(false) }
+    var alt by remember { mutableStateOf(false) }
+    var view by remember { mutableStateOf<TerminalView?>(null) }
+
+    Column(Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding().imePadding()) {
+        Row(
+            Modifier.fillMaxWidth().background(KeyboardBg).padding(start = 14.dp, end = 4.dp).height(36.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(if (running) Accent else Color(0xFFFFB74D)))
+            Text(
+                if (running) label else "$label · disconnected", color = Color(0xFFC9D1D9),
+                fontFamily = FontFamily.Monospace, fontSize = 13.sp, maxLines = 1,
+                modifier = Modifier.padding(start = 10.dp).weight(1f),
+            )
+            TextButton(onClick = onClose) { Text("✕", color = Color(0xFF8A949E)) }
+        }
+        AndroidView(
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 4.dp),
+            factory = { ctx ->
+                TerminalView(ctx, null).apply {
+                    view = this
+                    val imm = ctx.getSystemService(InputMethodManager::class.java)
+                    val density = ctx.resources.displayMetrics.scaledDensity
+                    var textPx = 12 * density
+                    setBackgroundColor(android.graphics.Color.BLACK)
+                    setTextSize(textPx.toInt()) // first: it creates the renderer setTypeface needs
+                    // Nerd Font: oh-my-posh / starship prompt icons render instead of boxes.
+                    setTypeface(ResourcesCompat.getFont(ctx, R.font.nerd_mono) ?: Typeface.MONOSPACE)
+                    isFocusable = true
+                    isFocusableInTouchMode = true
+                    session.updateTerminalSessionClient(UiSessionClient(ctx, this) { running = false })
+                    setTerminalViewClient(object : TerminalViewClient by NoopViewClient {
+                        // Pinch to zoom, like Termux.
+                        override fun onScale(scale: Float): Float {
+                            if (scale in 0.9f..1.1f) return scale
+                            textPx = (textPx * scale).coerceIn(6 * density, 36 * density)
+                            setTextSize(textPx.toInt())
+                            return 1f
+                        }
+                        override fun onSingleTapUp(e: MotionEvent) { requestFocus(); imm.showSoftInput(this@apply, 0) }
+                        override fun readControlKey(): Boolean = ctrl.also { ctrl = false }
+                        override fun readAltKey(): Boolean = alt.also { alt = false }
+                    })
+                    attachSession(session)
+                    post { requestFocus(); imm.showSoftInput(this, 0) }
+                }
+            },
+        )
+        // Extra keys styled like the app's PC keyboard.
+        Column(Modifier.fillMaxWidth().background(KeyboardBg).padding(3.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            for (row in EXTRA_KEYS) {
+                Row(Modifier.fillMaxWidth().height(40.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    for (k in row) {
+                        val on = (k == "CTRL" && ctrl) || (k == "ALT" && alt)
+                        Box(
+                            Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(6.dp))
+                                .background(if (on) KeySticky else KeyBg)
+                                .clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                    val v = view ?: return@clickable
+                                    when (k) {
+                                        "CTRL" -> ctrl = !ctrl
+                                        "ALT" -> alt = !alt
+                                        "/", "-" -> v.inputCodePoint(k[0].code, false, false)
+                                        else -> {
+                                            var mod = 0
+                                            if (ctrl) mod = mod or KeyHandler.KEYMOD_CTRL
+                                            if (alt) mod = mod or KeyHandler.KEYMOD_ALT
+                                            ctrl = false; alt = false
+                                            v.handleKeyCode(KEYCODES.getValue(k), mod)
+                                        }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                k, color = if (on) Accent else Color(0xFFE6EBEF),
+                                fontSize = if (k.length > 2) 12.sp else 16.sp,
+                                fontWeight = if (on) FontWeight.Bold else FontWeight.Medium,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
-    return if (sb.length > 50_000) sb.substring(sb.length - 50_000) else sb.toString()
+}
+
+private class UiSessionClient(val ctx: Context, val view: TerminalView, val onFinished: () -> Unit) : TerminalSessionClient by NoopSessionClient {
+    override fun onSessionFinished(finishedSession: TerminalSession) = onFinished()
+    override fun onTextChanged(changedSession: TerminalSession) = view.onScreenUpdated()
+    override fun onColorsChanged(session: TerminalSession) = view.invalidate()
+    override fun onCopyTextToClipboard(session: TerminalSession, text: String) {
+        ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("", text))
+    }
+    override fun onPasteTextFromClipboard(session: TerminalSession) {
+        val clip = ctx.getSystemService(ClipboardManager::class.java).primaryClip ?: return
+        val text = clip.getItemAt(0).coerceToText(ctx)?.toString() ?: return
+        session.emulator?.paste(text)
+    }
+}
+
+private object NoopSessionClient : TerminalSessionClient {
+    override fun onTextChanged(changedSession: TerminalSession) {}
+    override fun onTitleChanged(changedSession: TerminalSession) {}
+    override fun onSessionFinished(finishedSession: TerminalSession) {}
+    override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
+    override fun onPasteTextFromClipboard(session: TerminalSession) {}
+    override fun onBell(session: TerminalSession) {}
+    override fun onColorsChanged(session: TerminalSession) {}
+    override fun onTerminalCursorStateChange(state: Boolean) {}
+    override fun getTerminalCursorStyle(): Int? = null
+    override fun logError(tag: String, message: String) {}
+    override fun logWarn(tag: String, message: String) {}
+    override fun logInfo(tag: String, message: String) {}
+    override fun logDebug(tag: String, message: String) {}
+    override fun logVerbose(tag: String, message: String) {}
+    override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) {}
+    override fun logStackTrace(tag: String, e: Exception) {}
+}
+
+private object NoopViewClient : TerminalViewClient {
+    override fun onScale(scale: Float): Float = scale
+    override fun onSingleTapUp(e: MotionEvent) {}
+    override fun shouldBackButtonBeMappedToEscape(): Boolean = false
+    override fun shouldEnforceCharBasedInput(): Boolean = false
+    override fun shouldUseCtrlSpaceWorkaround(): Boolean = false
+    override fun isTerminalViewSelected(): Boolean = true
+    override fun copyModeChanged(copyMode: Boolean) {}
+    override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean = false
+    override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean = false
+    override fun onLongPress(event: MotionEvent): Boolean = false
+    override fun readControlKey(): Boolean = false
+    override fun readAltKey(): Boolean = false
+    override fun readShiftKey(): Boolean = false
+    override fun readFnKey(): Boolean = false
+    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean = false
+    override fun onEmulatorSet() {}
+    override fun logError(tag: String, message: String) {}
+    override fun logWarn(tag: String, message: String) {}
+    override fun logInfo(tag: String, message: String) {}
+    override fun logDebug(tag: String, message: String) {}
+    override fun logVerbose(tag: String, message: String) {}
+    override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) {}
+    override fun logStackTrace(tag: String, e: Exception) {}
 }

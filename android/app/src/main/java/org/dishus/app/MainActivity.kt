@@ -1,10 +1,25 @@
 package org.dishus.app
 
+import android.content.pm.ApplicationInfo
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -37,7 +52,18 @@ class MainActivity : FragmentActivity() {
             DishusTheme {
                 // The Surface supplies the theme background AND the content colour; without it
                 // plain Text falls back to black and is invisible on a dark window.
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Root(app, this) }
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                        // Debug APKs are test builds for developers; say so on every screen.
+                        Column {
+                            Text("TEST BUILD · for developers, not the official app",
+                                color = Color.White, fontSize = 12.sp, textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().background(Color(0xFFB3261E))
+                                    .windowInsetsPadding(WindowInsets.statusBars).padding(vertical = 4.dp))
+                            Box(Modifier.weight(1f).consumeWindowInsets(WindowInsets.statusBars)) { Root(app, this@MainActivity) }
+                        }
+                    } else Root(app, this)
+                }
             }
         }
     }
